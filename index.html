@@ -1,0 +1,1057 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jogo 3D - Cavernas Infinitas (Worker)</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #000; font-family: monospace; color: #fff; }
+    canvas { display: block; }
+
+    #crosshair {
+      position: fixed; top: 50%; left: 50%;
+      width: 6px; height: 6px; margin: -3px 0 0 -3px;
+      background: #fff; border-radius: 50%;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.6);
+      pointer-events: none; z-index: 5;
+    }
+
+    #bars {
+      position: fixed; bottom: 20px; right: 20px;
+      display: flex; gap: 10px; align-items: flex-end;
+      pointer-events: none; z-index: 5;
+    }
+    .barWrap {
+      width: 28px; height: 180px;
+      background: rgba(0,0,0,0.6);
+      border: 2px solid #333;
+      border-radius: 6px;
+      overflow: hidden; display: flex;
+      flex-direction: column-reverse; position: relative;
+    }
+    .barFill { width: 100%; transition: height 0.08s linear, background 0.2s; }
+    #staminaFill { background: #4caf50; }
+    #batteryFill { background: #4aa8ff; }
+    .barLabel {
+      position: absolute; bottom: -20px; left: 50%;
+      transform: translateX(-50%);
+      font-size: 10px; color: #aaa; white-space: nowrap;
+    }
+
+    #hotbar {
+      position: fixed; bottom: 16px; left: 50%;
+      transform: translateX(-50%);
+      display: flex; gap: 4px; padding: 4px;
+      background: rgba(0,0,0,0.55);
+      border: 2px solid #333; border-radius: 6px;
+      user-select: none; z-index: 5;
+    }
+    .slot {
+      width: 54px; height: 54px;
+      background: rgba(40,40,40,0.75);
+      border: 2px solid #222; border-radius: 4px;
+      position: relative;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+    }
+    .slot.selected { border-color: #fff; box-shadow: 0 0 0 2px #6cf; }
+    .slot .key {
+      position: absolute; top: 1px; left: 3px;
+      font-size: 9px; color: #888;
+    }
+    .slot .qtd {
+      position: absolute; bottom: 1px; right: 3px;
+      font-size: 12px; font-weight: bold;
+      color: #fff; text-shadow: 1px 1px 0 #000;
+    }
+
+    #inventory {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.75);
+      display: none; align-items: center; justify-content: center;
+      z-index: 20;
+    }
+    #inventory.open { display: flex; }
+    #invPanel {
+      background: #1a1a1a; border: 2px solid #444;
+      border-radius: 8px; padding: 18px;
+      max-width: 520px; width: 90%;
+    }
+    #invPanel h2 {
+      font-size: 16px; margin-bottom: 12px; color: #ccc; text-align: center;
+    }
+    .invSection { margin-bottom: 14px; }
+    .invSection .label {
+      font-size: 11px; color: #888; margin-bottom: 6px;
+      text-transform: uppercase; letter-spacing: 1px;
+    }
+    .invGrid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
+    .invGrid.wide { grid-template-columns: repeat(8, 1fr); }
+    .invCell {
+      aspect-ratio: 1/1;
+      background: rgba(50,50,50,0.8);
+      border: 1px solid #333; border-radius: 4px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; position: relative;
+    }
+    .invCell.selected { border-color: #6cf; box-shadow: 0 0 0 2px #6cf inset; }
+    .invCell .key { position: absolute; top: 1px; left: 3px; font-size: 9px; color: #777; }
+    .invCell .qtd {
+      position: absolute; bottom: 1px; right: 3px;
+      font-size: 11px; font-weight: bold;
+      color: #fff; text-shadow: 1px 1px 0 #000;
+    }
+    .hint { text-align: center; font-size: 11px; color: #777; margin-top: 10px; }
+
+    #overlay {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      flex-direction: column; background: rgba(0,0,0,0.85);
+      cursor: pointer; z-index: 30; text-align: center; padding: 20px;
+    }
+    #overlay h1 { font-size: 24px; margin-bottom: 12px; }
+    #overlay p { font-size: 13px; opacity: 0.85; line-height: 1.9; }
+    #overlay kbd {
+      background: #333; border: 1px solid #555;
+      padding: 1px 6px; border-radius: 3px; font-size: 12px;
+    }
+
+    #loading {
+      position: fixed; inset: 0; background: #000;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      font-size: 14px; color: #6cf; z-index: 40; gap: 14px;
+    }
+    #loading .spinner {
+      width: 32px; height: 32px;
+      border: 3px solid #223;
+      border-top-color: #6cf;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Debug */
+    #debug {
+      position: fixed; top: 8px; left: 8px;
+      font-size: 11px; color: #8cf;
+      background: rgba(0,0,0,0.5);
+      padding: 6px 10px; border-radius: 4px;
+      pointer-events: none; z-index: 5;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="loading">
+    <div class="spinner"></div>
+    ⛏️ Iniciando Worker e gerando mundo...
+  </div>
+
+  <div id="overlay" style="display:none">
+    <h1>🕳️ Cavernas Infinitas (Worker)</h1>
+    <p>
+      Clique para jogar<br/><br/>
+      <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> — mover<br/>
+      <kbd>Espaço</kbd> — pular<br/>
+      <kbd>W</kbd> <kbd>W</kbd> — correr<br/>
+      <kbd>F</kbd> — lanterna<br/>
+      <kbd>E</kbd> — inventário<br/>
+      <kbd>Q</kbd> — dash de 5m<br/>
+      <kbd>1</kbd>–<kbd>6</kbd> — trocar slot<br/>
+      <kbd>Clique Esq.</kbd> — quebrar (picareta) / colocar (bloco)<br/>
+      <kbd>Mouse</kbd> — olhar • <kbd>Esc</kbd> — soltar mouse
+    </p>
+  </div>
+
+  <div id="crosshair"></div>
+  <div id="debug"></div>
+
+  <div id="bars">
+    <div class="barWrap">
+      <div class="barFill" id="batteryFill" style="height:100%"></div>
+      <div class="barLabel">🔋</div>
+    </div>
+    <div class="barWrap">
+      <div class="barFill" id="staminaFill" style="height:100%"></div>
+      <div class="barLabel">⚡</div>
+    </div>
+  </div>
+
+  <div id="hotbar"></div>
+
+  <div id="inventory">
+    <div id="invPanel">
+      <h2>🎒 Inventário</h2>
+      <div class="invSection">
+        <div class="label">Hotbar (1-6)</div>
+        <div class="invGrid" id="invHotbar"></div>
+      </div>
+      <div class="invSection">
+        <div class="label">Mochila (16 slots)</div>
+        <div class="invGrid wide" id="invBag"></div>
+      </div>
+      <div class="hint">Pressione <kbd>E</kbd> para fechar</div>
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    // ============================================================
+    // CONFIG — deve bater com chunk-worker.js
+    // ============================================================
+    const CHUNK_SIZE = 16;         // 16³ = 4096 blocos (3.8x mais leve que 25³)
+    const MAX_CHUNKS = 60;
+    const CACHE_TTL_MS = 3000;
+    const DISTANCIA_MAX_VISAO = 8 * CHUNK_SIZE;  // ~128m
+
+    // Quantos pedidos enviamos por frame ao Worker (assíncrono — não trava)
+    const MAX_REQUESTS_POR_FRAME = 6;
+    // Quantos chunks prontos anexamos à cena por frame
+    const MAX_MESHES_POR_FRAME = 2;
+
+    // Física
+    const GRAVIDADE      = 25;
+    const VEL_ANDAR      = 4.5;
+    const VEL_CORRER     = 8.5;
+    const FORCA_PULO     = 8.5;
+    const ALTURA_OLHO    = 1.7;
+    const DOUBLE_TAP_MS  = 280;
+    const RAIO_JOGADOR   = 0.35;
+    const DASH_DISTANCIA = 5;
+    const DASH_COOLDOWN  = 5000;
+    const DASH_DURACAO   = 180;
+    const ALCANCE_QUEBRAR = 4.5;
+    const ALCANCE_COLOCAR = 6.0;
+
+    // Estamina / Bateria
+    const STAMINA_MAX = 100;
+    const BATERIA_MAX = 100;
+    const CUSTO_CORRER_S   = 5;
+    const CUSTO_PULO       = 5;
+    const CUSTO_DASH       = 15;
+    const REGEN_STAMINA_S  = 10;
+    const CUSTO_LANTERNA_S = 2;
+    const REGEN_BATERIA_S  = 2;
+    const MAX_POR_SLOT     = 100;
+
+    // ============================================================
+    // WORKER
+    // ============================================================
+    const worker = new Worker('chunk-worker.js');
+    const pedidosPendentes = new Map(); // reqId -> { cx, cy, cz }
+    let proximoReqId = 1;
+    const buffersProntos = []; // fila de chunks prontos para virar Mesh
+
+    // Cache global de modificações (blocos quebrados / colocados)
+    // Chave: "x,y,z"
+    const blocosQuebrados = new Set();
+    const blocosColocados = new Set();
+
+    worker.onmessage = (e) => {
+      const { reqId, cx, cy, cz, positions, normals, colors, indices, solidosExpostos } = e.data;
+
+      pedidosPendentes.delete(reqId);
+      buffersProntos.push({
+        cx, cy, cz,
+        positions, normals, colors, indices,
+        solidosExpostos,
+      });
+    };
+
+    worker.onerror = (err) => {
+      console.error('Worker error:', err);
+    };
+
+    function pedirChunk(cx, cy, cz) {
+      const reqId = proximoReqId++;
+      pedidosPendentes.set(reqId, { cx, cy, cz });
+
+      // Filtra modificações só do chunk (evita enviar Sets gigantes)
+      const bx0 = cx * CHUNK_SIZE, by0 = cy * CHUNK_SIZE, bz0 = cz * CHUNK_SIZE;
+      const bx1 = bx0 + CHUNK_SIZE, by1 = by0 + CHUNK_SIZE, bz1 = bz0 + CHUNK_SIZE;
+
+      const quebrados = [];
+      const colocados = [];
+
+      for (const kb of blocosQuebrados) {
+        const [x, y, z] = kb.split(',').map(Number);
+        if (x >= bx0 && x < bx1 && y >= by0 && y < by1 && z >= bz0 && z < bz1) {
+          quebrados.push(kb);
+        }
+      }
+      for (const kb of blocosColocados) {
+        const [x, y, z] = kb.split(',').map(Number);
+        if (x >= bx0 && x < bx1 && y >= by0 && y < by1 && z >= bz0 && z < bz1) {
+          colocados.push(kb);
+        }
+      }
+
+      worker.postMessage({
+        reqId, cx, cy, cz,
+        mods: { quebrados, colocados },
+      });
+    }
+
+    // ============================================================
+    // CENA
+    // ============================================================
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a0f22);
+    scene.fog = new THREE.Fog(0x0a0f22, DISTANCIA_MAX_VISAO * 0.4, DISTANCIA_MAX_VISAO * 0.95);
+
+    const camera = new THREE.PerspectiveCamera(
+      75, window.innerWidth / window.innerHeight, 0.1, 500
+    );
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    // ============================================================
+    // LUZES
+    // ============================================================
+    scene.add(new THREE.HemisphereLight(0x334466, 0x111122, 0.4));
+
+    const moon = new THREE.DirectionalLight(0x88aaff, 0.7);
+    moon.position.set(20, 60, 10);
+    moon.castShadow = true;
+    moon.shadow.mapSize.set(1024, 1024);
+    moon.shadow.camera.left = -40;
+    moon.shadow.camera.right = 40;
+    moon.shadow.camera.top = 40;
+    moon.shadow.camera.bottom = -40;
+    moon.shadow.camera.far = 150;
+    scene.add(moon);
+    scene.add(moon.target);
+
+    const flashlight = new THREE.SpotLight(0xfff2c0, 0, 40, Math.PI / 5, 0.25, 1.0);
+    flashlight.target.position.set(0, 0, -1);
+    scene.add(flashlight);
+    scene.add(flashlight.target);
+
+    // ============================================================
+    // CHUNKS (thread principal)
+    // ============================================================
+    const chunks = new Map(); // "cx,cy,cz" -> { mesh, geo, mat, chunkBox, colliders, visivel, ultimaVezVisto }
+    let totalColliders = [];  // Box3[] (todos os chunks carregados)
+
+    // Material único compartilhado (vertexColors)
+    const materialChunk = new THREE.MeshStandardMaterial({
+      vertexColors: true, roughness: 0.95, metalness: 0.0,
+    });
+
+    function keyC(cx, cy, cz) { return `${cx},${cy},${cz}`; }
+
+    function anexarChunkPronto(dados) {
+      const { cx, cy, cz, positions, normals, colors, indices, solidosExpostos } = dados;
+      const k = keyC(cx, cy, cz);
+      if (chunks.has(k)) return;
+
+      // Se o chunk está vazio (sem faces), registra mesmo assim
+      if (positions.length === 0) {
+        chunks.set(k, {
+          empty: true,
+          mesh: null,
+          chunkBox: new THREE.Box3(
+            new THREE.Vector3(cx * CHUNK_SIZE, cy * CHUNK_SIZE, cz * CHUNK_SIZE),
+            new THREE.Vector3((cx+1) * CHUNK_SIZE, (cy+1) * CHUNK_SIZE, (cz+1) * CHUNK_SIZE)
+          ),
+          colliders: [],
+          visivel: false,
+          ultimaVezVisto: performance.now(),
+        });
+        return;
+      }
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geo.setAttribute('normal',   new THREE.BufferAttribute(normals, 3));
+      geo.setAttribute('color',    new THREE.BufferAttribute(colors, 3));
+      geo.setIndex(new THREE.BufferAttribute(indices, 1));
+      geo.computeBoundingSphere();
+
+      const mesh = new THREE.Mesh(geo, materialChunk);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+
+      // Colisores: 1 por bloco com face exposta
+      const colliders = [];
+      for (const [x, y, z] of solidosExpostos) {
+        colliders.push(new THREE.Box3(
+          new THREE.Vector3(x, y, z),
+          new THREE.Vector3(x + 1, y + 1, z + 1)
+        ));
+      }
+      // Adiciona ao array global de colisores
+      for (const b of colliders) totalColliders.push(b);
+
+      chunks.set(k, {
+        mesh, geo,
+        chunkBox: new THREE.Box3(
+          new THREE.Vector3(cx * CHUNK_SIZE, cy * CHUNK_SIZE, cz * CHUNK_SIZE),
+          new THREE.Vector3((cx+1) * CHUNK_SIZE, (cy+1) * CHUNK_SIZE, (cz+1) * CHUNK_SIZE)
+        ),
+        colliders,
+        visivel: false,
+        ultimaVezVisto: performance.now(),
+      });
+    }
+
+    function descarregarChunk(k) {
+      const c = chunks.get(k);
+      if (!c) return;
+
+      if (c.mesh) {
+        scene.remove(c.mesh);
+        c.geo.dispose();
+        // materialChunk é compartilhado, NÃO descartar
+      }
+      for (const b of c.colliders) {
+        const idx = totalColliders.indexOf(b);
+        if (idx >= 0) totalColliders.splice(idx, 1);
+      }
+      chunks.delete(k);
+    }
+
+    // ============================================================
+    // FRUSTUM CULLING
+    // ============================================================
+    const frustum = new THREE.Frustum();
+    const projScreenMatrix = new THREE.Matrix4();
+    const vetorTemp = new THREE.Vector3();
+
+    function atualizarFrustum() {
+      camera.updateMatrixWorld();
+      projScreenMatrix.multiplyMatrices(
+        camera.projectionMatrix,
+        camera.matrixWorldInverse
+      );
+      frustum.setFromProjectionMatrix(projScreenMatrix);
+    }
+
+    function atualizarChunksPorVisao(px, py, pz) {
+      atualizarFrustum();
+
+      const pcx = Math.floor(px / CHUNK_SIZE);
+      const pcy = Math.floor(py / CHUNK_SIZE);
+      const pcz = Math.floor(pz / CHUNK_SIZE);
+
+      const raioChunks = Math.ceil(DISTANCIA_MAX_VISAO / CHUNK_SIZE);
+      const candidatos = [];
+
+      for (let dy = -raioChunks; dy <= raioChunks; dy++) {
+        for (let dx = -raioChunks; dx <= raioChunks; dx++) {
+          for (let dz = -raioChunks; dz <= raioChunks; dz++) {
+            const cx = pcx + dx;
+            const cy = pcy + dy;
+            const cz = pcz + dz;
+
+            // distância do centro do chunk ao jogador
+            const ccx = (cx + 0.5) * CHUNK_SIZE;
+            const ccy = (cy + 0.5) * CHUNK_SIZE;
+            const ccz = (cz + 0.5) * CHUNK_SIZE;
+            const ddx = ccx - px, ddy = ccy - py, ddz = ccz - pz;
+            const dist2 = ddx*ddx + ddy*ddy + ddz*ddz;
+            if (dist2 > DISTANCIA_MAX_VISAO * DISTANCIA_MAX_VISAO) continue;
+
+            const box = new THREE.Box3(
+              new THREE.Vector3(cx * CHUNK_SIZE, cy * CHUNK_SIZE, cz * CHUNK_SIZE),
+              new THREE.Vector3((cx+1) * CHUNK_SIZE, (cy+1) * CHUNK_SIZE, (cz+1) * CHUNK_SIZE)
+            );
+
+            const visivel = frustum.intersectsBox(box);
+            candidatos.push({ cx, cy, cz, dist2, visivel });
+          }
+        }
+      }
+
+      // Ordena: visíveis primeiro, mais próximos primeiro
+      candidatos.sort((a, b) => {
+        if (a.visivel !== b.visivel) return a.visivel ? -1 : 1;
+        return a.dist2 - b.dist2;
+      });
+
+      const agora = performance.now();
+      const selecionados = new Set();
+
+      // 1) Marca visíveis (até MAX_CHUNKS)
+      let countVisiveis = 0;
+      for (const c of candidatos) {
+        if (!c.visivel) continue;
+        if (countVisiveis >= MAX_CHUNKS) break;
+        const k = keyC(c.cx, c.cy, c.cz);
+        selecionados.add(k);
+        countVisiveis++;
+        const ch = chunks.get(k);
+        if (ch) {
+          ch.ultimaVezVisto = agora;
+          ch.visivel = true;
+        }
+      }
+
+      // 2) Adiciona cache (não-visíveis recentes) até preencher
+      for (const c of candidatos) {
+        if (c.visivel) continue;
+        if (selecionados.size >= MAX_CHUNKS) break;
+        const k = keyC(c.cx, c.cy, c.cz);
+        const ch = chunks.get(k);
+        if (!ch) continue;
+        if (agora - ch.ultimaVezVisto < CACHE_TTL_MS) {
+          selecionados.add(k);
+          ch.visivel = false;
+        }
+      }
+
+      // 3) Descarrega quem não foi selecionado E passou do TTL
+      const paraDescarregar = [];
+      chunks.forEach((ch, k) => {
+        if (selecionados.has(k)) return;
+        if (agora - ch.ultimaVezVisto >= CACHE_TTL_MS) {
+          paraDescarregar.push(k);
+        }
+      });
+      for (const k of paraDescarregar) descarregarChunk(k);
+
+      // 4) Pede ao Worker os visíveis que ainda não estão prontos
+      let requests = 0;
+      for (const c of candidatos) {
+        if (!c.visivel) continue;
+        const k = keyC(c.cx, c.cy, c.cz);
+        if (chunks.has(k)) continue;
+        // já pedido?
+        let jaPedido = false;
+        for (const p of pedidosPendentes.values()) {
+          if (p.cx === c.cx && p.cy === c.cy && p.cz === c.cz) {
+            jaPedido = true;
+            break;
+          }
+        }
+        if (jaPedido) continue;
+        pedirChunk(c.cx, c.cy, c.cz);
+        requests++;
+        if (requests >= MAX_REQUESTS_POR_FRAME) break;
+      }
+
+      // 5) Anexa chunks prontos (respeitando MAX_MESHES_POR_FRAME)
+      let meshes = 0;
+      while (buffersProntos.length > 0 && meshes < MAX_MESHES_POR_FRAME) {
+        const dados = buffersProntos.shift();
+        anexarChunkPronto(dados);
+        meshes++;
+      }
+    }
+
+    // ============================================================
+    // FÍSICA
+    // ============================================================
+    function caixaJogador(x, yBase, z) {
+      return new THREE.Box3(
+        new THREE.Vector3(x - RAIO_JOGADOR, yBase + 0.1, z - RAIO_JOGADOR),
+        new THREE.Vector3(x + RAIO_JOGADOR, yBase + ALTURA_OLHO + 0.1, z + RAIO_JOGADOR)
+      );
+    }
+
+    function colideComAlgo(box) {
+      const cx = (box.min.x + box.max.x) / 2;
+      const cy = (box.min.y + box.max.y) / 2;
+      const cz = (box.min.z + box.max.z) / 2;
+      for (const c of totalColliders) {
+        const ccx = (c.min.x + c.max.x) / 2;
+        const ccy = (c.min.y + c.max.y) / 2;
+        const ccz = (c.min.z + c.max.z) / 2;
+        const dx = ccx - cx, dy = ccy - cy, dz = ccz - cz;
+        if (dx*dx + dy*dy + dz*dz > 25) continue;
+        if (c.intersectsBox(box)) return true;
+      }
+      return false;
+    }
+
+    // ============================================================
+    // INVENTÁRIO
+    // ============================================================
+    const ITENS = {
+      picareta: { id: 'picareta', nome: 'Picareta', icone: '⛏️' },
+      espada:   { id: 'espada',   nome: 'Espada',   icone: '🗡️' },
+      pedra:    { id: 'pedra',    nome: 'Pedra',    icone: '🪨' },
+    };
+
+    const inventario = new Array(22).fill(null);
+    inventario[0] = { ...ITENS.picareta, quantidade: 1 };
+    inventario[1] = { ...ITENS.espada,   quantidade: 1 };
+    let slotSelecionado = 0;
+
+    function adicionarPedra() {
+      for (let i = 0; i < inventario.length; i++) {
+        const it = inventario[i];
+        if (it && it.id === 'pedra' && it.quantidade < MAX_POR_SLOT) {
+          it.quantidade++;
+          return true;
+        }
+      }
+      for (let i = 0; i < inventario.length; i++) {
+        if (inventario[i] === null) {
+          inventario[i] = { ...ITENS.pedra, quantidade: 1 };
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function removerPedraDoSlot(idx) {
+      const it = inventario[idx];
+      if (!it || it.id !== 'pedra') return false;
+      it.quantidade--;
+      if (it.quantidade <= 0) inventario[idx] = null;
+      return true;
+    }
+
+    // ============================================================
+    // ESTADO
+    // ============================================================
+    const estado = {
+      stamina: STAMINA_MAX,
+      bateria: BATERIA_MAX,
+      flashOn: false,
+      dashCooldownAte: 0,
+      dashAte: 0,
+      dashDirecao: new THREE.Vector3(),
+      dashUsado: false,
+      invAberto: false,
+    };
+
+    const player = {
+      pos: new THREE.Vector3(0.5, 40 + ALTURA_OLHO, 0.5),
+      vel: new THREE.Vector3(),
+      onGround: false,
+    };
+
+    // ============================================================
+    // CONTROLES
+    // ============================================================
+    const keys = {};
+    let yaw = 0, pitch = 0;
+    let running = false;
+    let lastWTapTime = 0;
+
+    document.addEventListener('keydown', (e) => {
+      const k = e.key.toLowerCase();
+      if (k === 'e') { if (!e.repeat) toggleInventario(); return; }
+      if (k === 'w' && !keys['w']) {
+        const now = performance.now();
+        if (now - lastWTapTime < DOUBLE_TAP_MS) running = true;
+        lastWTapTime = now;
+      }
+      if (k === 'f' && !e.repeat) estado.flashOn = !estado.flashOn;
+      if (k === 'q' && !e.repeat) tentarDash();
+      if (k >= '1' && k <= '6' && !e.repeat) {
+        slotSelecionado = parseInt(k) - 1;
+        atualizarHotbar();
+      }
+      if (k === ' ') e.preventDefault();
+      keys[k] = true;
+    });
+
+    document.addEventListener('keyup', (e) => {
+      const k = e.key.toLowerCase();
+      keys[k] = false;
+      if (k === 'w') running = false;
+    });
+
+    let pointerLocked = false;
+    const overlay = document.getElementById('overlay');
+
+    overlay.addEventListener('click', () => {
+      renderer.domElement.requestPointerLock();
+    });
+
+    document.addEventListener('pointerlockchange', () => {
+      pointerLocked = document.pointerLockElement === renderer.domElement;
+      overlay.style.display = pointerLocked ? 'none' : 'flex';
+      if (!pointerLocked && estado.invAberto) toggleInventario();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!pointerLocked || estado.invAberto) return;
+      yaw   -= e.movementX * 0.0022;
+      pitch -= e.movementY * 0.0022;
+      pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
+    });
+
+    document.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      if (!pointerLocked || estado.invAberto) return;
+      acaoCliqueEsquerdo();
+    });
+
+    // ============================================================
+    // HOTBAR / INVENTÁRIO DOM
+    // ============================================================
+    function atualizarHotbar() {
+      const hotbarEl = document.getElementById('hotbar');
+      hotbarEl.innerHTML = '';
+      for (let i = 0; i < 6; i++) {
+        const item = inventario[i];
+        const div = document.createElement('div');
+        div.className = 'slot' + (i === slotSelecionado ? ' selected' : '');
+        let html = `<span class="key">${i + 1}</span>`;
+        if (item) html += item.icone;
+        if (item && item.quantidade > 1) html += `<span class="qtd">${item.quantidade}</span>`;
+        div.innerHTML = html;
+        hotbarEl.appendChild(div);
+      }
+      if (estado.invAberto) atualizarInventarioDOM();
+    }
+
+    function atualizarInventarioDOM() {
+      const invHotbar = document.getElementById('invHotbar');
+      invHotbar.innerHTML = '';
+      for (let i = 0; i < 6; i++) {
+        const item = inventario[i];
+        const div = document.createElement('div');
+        div.className = 'invCell' + (i === slotSelecionado ? ' selected' : '');
+        let html = `<span class="key">${i + 1}</span>`;
+        if (item) html += item.icone;
+        if (item && item.quantidade > 1) html += `<span class="qtd">${item.quantidade}</span>`;
+        div.innerHTML = html;
+        invHotbar.appendChild(div);
+      }
+      const invBag = document.getElementById('invBag');
+      invBag.innerHTML = '';
+      for (let i = 6; i < 22; i++) {
+        const item = inventario[i];
+        const div = document.createElement('div');
+        div.className = 'invCell';
+        let html = '';
+        if (item) html += item.icone;
+        if (item && item.quantidade > 1) html += `<span class="qtd">${item.quantidade}</span>`;
+        div.innerHTML = html;
+        invBag.appendChild(div);
+      }
+    }
+
+    function toggleInventario() {
+      estado.invAberto = !estado.invAberto;
+      document.getElementById('inventory').classList.toggle('open', estado.invAberto);
+      if (estado.invAberto) {
+        document.exitPointerLock();
+        atualizarInventarioDOM();
+      } else {
+        renderer.domElement.requestPointerLock();
+      }
+    }
+
+    // ============================================================
+    // AÇÕES
+    // ============================================================
+    const raycaster = new THREE.Raycaster();
+
+    function acaoCliqueEsquerdo() {
+      const item = inventario[slotSelecionado];
+      if (!item) return;
+      if (item.id === 'picareta') tentarQuebrarBloco();
+      else if (item.id === 'pedra') tentarColocarBloco();
+    }
+
+    function tentarQuebrarBloco() {
+      raycaster.far = ALCANCE_QUEBRAR;
+      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+
+      const meshes = [];
+      chunks.forEach(c => { if (c.mesh) meshes.push(c.mesh); });
+
+      const hits = raycaster.intersectObjects(meshes, false);
+      if (hits.length === 0) return;
+
+      const hit = hits[0];
+      const dist = camera.position.distanceTo(hit.point);
+      if (dist > ALCANCE_QUEBRAR + 0.1) return;
+
+      const p = hit.point.clone();
+      p.add(hit.face.normal.clone().multiplyScalar(-0.5));
+      const bx = Math.floor(p.x);
+      const by = Math.floor(p.y);
+      const bz = Math.floor(p.z);
+
+      const kb = `${bx},${by},${bz}`;
+      if (blocosQuebrados.has(kb)) return;
+
+      if (!adicionarPedra()) return;
+
+      blocosQuebrados.add(kb);
+      blocosColocados.delete(kb);
+      atualizarHotbar();
+      regenerarChunkDoBloco(bx, by, bz);
+    }
+
+    function tentarColocarBloco() {
+      const item = inventario[slotSelecionado];
+      if (!item || item.id !== 'pedra' || item.quantidade <= 0) return;
+
+      raycaster.far = ALCANCE_COLOCAR;
+      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+
+      const meshes = [];
+      chunks.forEach(c => { if (c.mesh) meshes.push(c.mesh); });
+
+      const hits = raycaster.intersectObjects(meshes, false);
+      if (hits.length === 0) return;
+
+      const hit = hits[0];
+      const dist = camera.position.distanceTo(hit.point);
+      if (dist > ALCANCE_COLOCAR + 0.1) return;
+
+      const p = hit.point.clone().add(hit.face.normal.clone().multiplyScalar(0.5));
+      const bx = Math.floor(p.x);
+      const by = Math.floor(p.y);
+      const bz = Math.floor(p.z);
+
+      const kb = `${bx},${by},${bz}`;
+      if (blocosColocados.has(kb)) return;
+
+      // validação: dentro do jogador?
+      const baseY = player.pos.y - ALTURA_OLHO;
+      const caixaBloco = new THREE.Box3(
+        new THREE.Vector3(bx, by, bz),
+        new THREE.Vector3(bx + 1, by + 1, bz + 1)
+      );
+      const caixaJ = caixaJogador(player.pos.x, baseY, player.pos.z);
+      if (caixaBloco.intersectsBox(caixaJ)) return;
+
+      if (!removerPedraDoSlot(slotSelecionado)) return;
+      blocosColocados.add(kb);
+      blocosQuebrados.delete(kb);
+      atualizarHotbar();
+      regenerarChunkDoBloco(bx, by, bz);
+    }
+
+    function regenerarChunkDoBloco(bx, by, bz) {
+      const cx = Math.floor(bx / CHUNK_SIZE);
+      const cy = Math.floor(by / CHUNK_SIZE);
+      const cz = Math.floor(bz / CHUNK_SIZE);
+
+      const lx = bx - cx * CHUNK_SIZE;
+      const ly = by - cy * CHUNK_SIZE;
+      const lz = bz - cz * CHUNK_SIZE;
+
+      const afetados = [[cx, cy, cz]];
+      if (lx === 0) afetados.push([cx - 1, cy, cz]);
+      if (lx === CHUNK_SIZE - 1) afetados.push([cx + 1, cy, cz]);
+      if (ly === 0) afetados.push([cx, cy - 1, cz]);
+      if (ly === CHUNK_SIZE - 1) afetados.push([cx, cy + 1, cz]);
+      if (lz === 0) afetados.push([cx, cy, cz - 1]);
+      if (lz === CHUNK_SIZE - 1) afetados.push([cx, cy, cz + 1]);
+
+      for (const [ax, ay, az] of afetados) {
+        const k = keyC(ax, ay, az);
+        if (chunks.has(k)) {
+          descarregarChunk(k);
+          pedirChunk(ax, ay, az);
+        }
+      }
+    }
+
+    function tentarDash() {
+      const agora = performance.now();
+      if (agora < estado.dashCooldownAte) return;
+      if (estado.invAberto) return;
+      if (estado.stamina < CUSTO_DASH) return;
+
+      estado.stamina -= CUSTO_DASH;
+      estado.dashDirecao.set(-Math.sin(yaw), 0, -Math.cos(yaw)).normalize();
+      estado.dashAte = agora + DASH_DURACAO;
+      estado.dashCooldownAte = agora + DASH_COOLDOWN;
+      estado.dashUsado = false;
+      camera.fov = 88;
+      camera.updateProjectionMatrix();
+    }
+
+    // ============================================================
+    // LOOP
+    // ============================================================
+    const clock = new THREE.Clock();
+    let frames = 0, fpsTimer = 0, fps = 60;
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      const dt = Math.min(clock.getDelta(), 0.05);
+      const now = performance.now();
+
+      // FPS
+      frames++;
+      if (now - fpsTimer > 500) {
+        fps = Math.round((frames * 1000) / (now - fpsTimer));
+        frames = 0;
+        fpsTimer = now;
+      }
+
+      camera.rotation.order = 'YXZ';
+      camera.rotation.y = yaw;
+      camera.rotation.x = pitch;
+
+      // Lanterna
+      const dirCamera = new THREE.Vector3();
+      camera.getWorldDirection(dirCamera);
+      flashlight.position.copy(camera.position);
+      flashlight.target.position.copy(camera.position).add(dirCamera.multiplyScalar(20));
+      flashlight.target.updateMatrixWorld();
+      flashlight.intensity = estado.flashOn && estado.bateria > 0 ? 2.8 : 0;
+
+      // Movimento
+      const querCorrer = running && keys['w'];
+      const correndoAgora = querCorrer && estado.stamina > 5 && player.onGround;
+      const speed = correndoAgora ? VEL_CORRER : VEL_ANDAR;
+
+      const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+      const right   = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+
+      const move = new THREE.Vector3();
+      if (!estado.invAberto) {
+        if (keys['w']) move.add(forward);
+        if (keys['s']) move.sub(forward);
+        if (keys['d']) move.add(right);
+        if (keys['a']) move.sub(right);
+      }
+      if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
+
+      // Dash
+      if (!estado.dashUsado && now < estado.dashAte) {
+        const alvoX = player.pos.x + estado.dashDirecao.x * DASH_DISTANCIA;
+        const alvoZ = player.pos.z + estado.dashDirecao.z * DASH_DISTANCIA;
+        const baseY = player.pos.y - ALTURA_OLHO;
+        if (!colideComAlgo(caixaJogador(alvoX, baseY, player.pos.z))) player.pos.x = alvoX;
+        if (!colideComAlgo(caixaJogador(player.pos.x, baseY, alvoZ))) player.pos.z = alvoZ;
+        estado.dashUsado = true;
+      }
+      if (now > estado.dashAte && camera.fov !== 75) {
+        camera.fov = 75; camera.updateProjectionMatrix();
+      }
+
+      // Pulo
+      if (!estado.invAberto && keys[' '] && player.onGround && estado.stamina >= CUSTO_PULO) {
+        player.vel.y = FORCA_PULO;
+        player.onGround = false;
+        estado.stamina -= CUSTO_PULO;
+      }
+
+      player.vel.y -= GRAVIDADE * dt;
+      const baseY = player.pos.y - ALTURA_OLHO;
+
+      const nextX = player.pos.x + move.x * dt;
+      if (!colideComAlgo(caixaJogador(nextX, baseY, player.pos.z))) player.pos.x = nextX;
+
+      const nextZ = player.pos.z + move.z * dt;
+      if (!colideComAlgo(caixaJogador(player.pos.x, baseY, nextZ))) player.pos.z = nextZ;
+
+      const nextY = player.pos.y + player.vel.y * dt;
+      const baseNext = nextY - ALTURA_OLHO;
+
+      if (player.vel.y <= 0) {
+        if (colideComAlgo(caixaJogador(player.pos.x, baseNext, player.pos.z))) {
+          player.vel.y = 0; player.onGround = true;
+        } else {
+          player.pos.y = nextY; player.onGround = false;
+        }
+      } else {
+        if (colideComAlgo(caixaJogador(player.pos.x, baseNext, player.pos.z))) {
+          player.vel.y = 0;
+        } else {
+          player.pos.y = nextY;
+        }
+        player.onGround = false;
+      }
+
+      // Respawn
+      if (player.pos.y < -64) {
+        player.pos.set(0.5, 40 + ALTURA_OLHO, 0.5);
+        player.vel.set(0, 0, 0);
+      }
+
+      camera.position.copy(player.pos);
+
+      // Chunks (frustum culling + pedidos + anexos)
+      atualizarChunksPorVisao(player.pos.x, player.pos.y, player.pos.z);
+
+      // Estamina / Bateria
+      if (correndoAgora) estado.stamina -= CUSTO_CORRER_S * dt;
+      else estado.stamina += REGEN_STAMINA_S * dt;
+      estado.stamina = Math.max(0, Math.min(STAMINA_MAX, estado.stamina));
+
+      if (estado.flashOn) {
+        estado.bateria -= CUSTO_LANTERNA_S * dt;
+        if (estado.bateria <= 0) { estado.bateria = 0; estado.flashOn = false; }
+      } else {
+        estado.bateria = Math.min(BATERIA_MAX, estado.bateria + REGEN_BATERIA_S * dt);
+      }
+
+      document.getElementById('staminaFill').style.height = estado.stamina + '%';
+      document.getElementById('batteryFill').style.height = estado.bateria + '%';
+      const sf = document.getElementById('staminaFill');
+      if (estado.stamina < 20) sf.style.background = '#e53935';
+      else if (estado.stamina < 50) sf.style.background = '#fbc02d';
+      else sf.style.background = '#4caf50';
+
+      // Lua
+      moon.position.set(player.pos.x + 20, player.pos.y + 40, player.pos.z + 10);
+      moon.target.position.set(player.pos.x, player.pos.y - 5, player.pos.z);
+      moon.target.updateMatrixWorld();
+
+      // Debug
+      document.getElementById('debug').innerHTML =
+        `FPS: ${fps} | Chunks: ${chunks.size} | Fila Worker: ${pedidosPendentes.size} | Prontos: ${buffersProntos.length}`;
+
+      renderer.render(scene, camera);
+    }
+
+    // ============================================================
+    // INIT
+    // ============================================================
+    function init() {
+      // Spawn
+      player.pos.set(0.5, 40 + ALTURA_OLHO, 0.5);
+
+      // Pedido inicial do chunk do spawn
+      const cx = Math.floor(player.pos.x / CHUNK_SIZE);
+      const cy = Math.floor(player.pos.y / CHUNK_SIZE);
+      const cz = Math.floor(player.pos.z / CHUNK_SIZE);
+      pedirChunk(cx, cy, cz);
+
+      // Espera o primeiro chunk ficar pronto antes de esconder o loading
+      const checkReady = setInterval(() => {
+        if (chunks.has(keyC(cx, cy, cz))) {
+          clearInterval(checkReady);
+          document.getElementById('loading').style.display = 'none';
+          overlay.style.display = 'flex';
+        }
+      }, 100);
+
+      atualizarHotbar();
+      animate();
+    }
+
+    setTimeout(init, 50);
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
