@@ -132,7 +132,6 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* Debug */
     #debug {
       position: fixed; top: 8px; left: 8px;
       font-size: 11px; color: #8cf;
@@ -147,7 +146,7 @@
 
   <div id="loading">
     <div class="spinner"></div>
-    ⛏️ Iniciando Worker e gerando mundo...
+    ⛏️ Procurando local seguro para nascer...
   </div>
 
   <div id="overlay" style="display:none">
@@ -161,8 +160,7 @@
       <kbd>E</kbd> — inventário<br/>
       <kbd>Q</kbd> — dash de 5m<br/>
       <kbd>1</kbd>–<kbd>6</kbd> — trocar slot<br/>
-      <kbd>Clique Esq.</kbd> — quebrar (picareta) / colocar (bloco)<br/>
-      <kbd>Mouse</kbd> — olhar • <kbd>Esc</kbd> — soltar mouse
+      <kbd>Clique Esq.</kbd> — quebrar (picareta) / colocar (bloco)
     </p>
   </div>
 
@@ -209,19 +207,17 @@
     import * as THREE from 'three';
 
     // ============================================================
-    // CONFIG — deve bater com chunk-worker.js
+    // CONFIG
     // ============================================================
-    const CHUNK_SIZE = 16;         // 16³ = 4096 blocos (3.8x mais leve que 25³)
+    const CHUNK_SIZE = 16;
     const MAX_CHUNKS = 60;
     const CACHE_TTL_MS = 3000;
-    const DISTANCIA_MAX_VISAO = 8 * CHUNK_SIZE;  // ~128m
+    const DISTANCIA_MAX_VISAO = 8 * CHUNK_SIZE;
 
-    // Quantos pedidos enviamos por frame ao Worker (assíncrono — não trava)
-    const MAX_REQUESTS_POR_FRAME = 6;
-    // Quantos chunks prontos anexamos à cena por frame
+    const MAX_REQUESTS_POR_FRAME = 8;
     const MAX_MESHES_POR_FRAME = 2;
+    const CHUNKS_PROXIMOS_OBRIGATORIOS = 2; // raio de chunks sempre pedidos
 
-    // Física
     const GRAVIDADE      = 25;
     const VEL_ANDAR      = 4.5;
     const VEL_CORRER     = 8.5;
@@ -235,7 +231,6 @@
     const ALCANCE_QUEBRAR = 4.5;
     const ALCANCE_COLOCAR = 6.0;
 
-    // Estamina / Bateria
     const STAMINA_MAX = 100;
     const BATERIA_MAX = 100;
     const CUSTO_CORRER_S   = 5;
@@ -251,34 +246,38 @@
     // ============================================================
     const worker = new Worker('chunk-worker.js');
     const pedidosPendentes = new Map(); // reqId -> { cx, cy, cz }
+    const setPedidos = new Set();        // "cx,cy,cz" rápidos
     let proximoReqId = 1;
-    const buffersProntos = []; // fila de chunks prontos para virar Mesh
+    const buffersProntos = [];
 
-    // Cache global de modificações (blocos quebrados / colocados)
-    // Chave: "x,y,z"
     const blocosQuebrados = new Set();
     const blocosColocados = new Set();
 
-    worker.onmessage = (e) => {
-      const { reqId, cx, cy, cz, positions, normals, colors, indices, solidosExpostos } = e.data;
+    function keyB(x, y, z) { return `${x},${y},${z}`; }
+    function keyC(cx, cy, cz) { return `${cx},${cy},${cz}`; }
 
+    worker.onmessage = (e) => {
+      const { reqId, cx, cy, cz, positions, normals, colors, indices, todosSolidos } = e.data;
       pedidosPendentes.delete(reqId);
+      setPedidos.delete(keyC(cx, cy, cz));
+
       buffersProntos.push({
         cx, cy, cz,
-        positions, normals, colors, indices,
-        solidosExpostos,
+        positions, normals, colors, indices, todosSolidos,
       });
     };
 
-    worker.onerror = (err) => {
-      console.error('Worker error:', err);
-    };
+    worker.onerror = (err) => console.error('Worker error:', err);
 
     function pedirChunk(cx, cy, cz) {
+      const k = keyC(cx, cy, cz);
+      if (setPedidos.has(k)) return; // já pedido
+
       const reqId = proximoReqId++;
       pedidosPendentes.set(reqId, { cx, cy, cz });
+      setPedidos.add(k);
 
-      // Filtra modificações só do chunk (evita enviar Sets gigantes)
+      // Filtra modificações só do chunk
       const bx0 = cx * CHUNK_SIZE, by0 = cy * CHUNK_SIZE, bz0 = cz * CHUNK_SIZE;
       const bx1 = bx0 + CHUNK_SIZE, by1 = by0 + CHUNK_SIZE, bz1 = bz0 + CHUNK_SIZE;
 
@@ -345,36 +344,43 @@
     scene.add(flashlight.target);
 
     // ============================================================
-    // CHUNKS (thread principal)
+    // CHUNKS
     // ============================================================
-    const chunks = new Map(); // "cx,cy,cz" -> { mesh, geo, mat, chunkBox, colliders, visivel, ultimaVezVisto }
-    let totalColliders = [];  // Box3[] (todos os chunks carregados)
+    const chunks = new Map(); // "cx,cy,cz" -> { mesh, geo, chunkBox, colliders, visivel, ultimaVezVisto }
+    let totalColliders = [];
 
-    // Material único compartilhado (vertexColors)
     const materialChunk = new THREE.MeshStandardMaterial({
       vertexColors: true, roughness: 0.95, metalness: 0.0,
     });
 
-    function keyC(cx, cy, cz) { return `${cx},${cy},${cz}`; }
-
     function anexarChunkPronto(dados) {
-      const { cx, cy, cz, positions, normals, colors, indices, solidosExpostos } = dados;
+      const { cx, cy, cz, positions, normals, colors, indices, todosSolidos } = dados;
       const k = keyC(cx, cy, cz);
       if (chunks.has(k)) return;
 
-      // Se o chunk está vazio (sem faces), registra mesmo assim
+      const chunkBox = new THREE.Box3(
+        new THREE.Vector3(cx * CHUNK_SIZE, cy * CHUNK_SIZE, cz * CHUNK_SIZE),
+        new THREE.Vector3((cx+1) * CHUNK_SIZE, (cy+1) * CHUNK_SIZE, (cz+1) * CHUNK_SIZE)
+      );
+
+      // Colisores = TODOS os blocos sólidos (não só os expostos)
+      const colliders = [];
+      if (todosSolidos && todosSolidos.length > 0) {
+        for (const [x, y, z] of todosSolidos) {
+          colliders.push(new THREE.Box3(
+            new THREE.Vector3(x, y, z),
+            new THREE.Vector3(x + 1, y + 1, z + 1)
+          ));
+        }
+      }
+
       if (positions.length === 0) {
+        // Chunk vazio (só ar) — registra mas sem mesh
         chunks.set(k, {
-          empty: true,
-          mesh: null,
-          chunkBox: new THREE.Box3(
-            new THREE.Vector3(cx * CHUNK_SIZE, cy * CHUNK_SIZE, cz * CHUNK_SIZE),
-            new THREE.Vector3((cx+1) * CHUNK_SIZE, (cy+1) * CHUNK_SIZE, (cz+1) * CHUNK_SIZE)
-          ),
-          colliders: [],
-          visivel: false,
-          ultimaVezVisto: performance.now(),
+          empty: true, mesh: null, chunkBox,
+          colliders, visivel: false, ultimaVezVisto: performance.now(),
         });
+        for (const b of colliders) totalColliders.push(b);
         return;
       }
 
@@ -390,26 +396,11 @@
       mesh.receiveShadow = true;
       scene.add(mesh);
 
-      // Colisores: 1 por bloco com face exposta
-      const colliders = [];
-      for (const [x, y, z] of solidosExpostos) {
-        colliders.push(new THREE.Box3(
-          new THREE.Vector3(x, y, z),
-          new THREE.Vector3(x + 1, y + 1, z + 1)
-        ));
-      }
-      // Adiciona ao array global de colisores
       for (const b of colliders) totalColliders.push(b);
 
       chunks.set(k, {
-        mesh, geo,
-        chunkBox: new THREE.Box3(
-          new THREE.Vector3(cx * CHUNK_SIZE, cy * CHUNK_SIZE, cz * CHUNK_SIZE),
-          new THREE.Vector3((cx+1) * CHUNK_SIZE, (cy+1) * CHUNK_SIZE, (cz+1) * CHUNK_SIZE)
-        ),
-        colliders,
-        visivel: false,
-        ultimaVezVisto: performance.now(),
+        mesh, geo, chunkBox,
+        colliders, visivel: false, ultimaVezVisto: performance.now(),
       });
     }
 
@@ -420,7 +411,6 @@
       if (c.mesh) {
         scene.remove(c.mesh);
         c.geo.dispose();
-        // materialChunk é compartilhado, NÃO descartar
       }
       for (const b of c.colliders) {
         const idx = totalColliders.indexOf(b);
@@ -434,7 +424,6 @@
     // ============================================================
     const frustum = new THREE.Frustum();
     const projScreenMatrix = new THREE.Matrix4();
-    const vetorTemp = new THREE.Vector3();
 
     function atualizarFrustum() {
       camera.updateMatrixWorld();
@@ -452,17 +441,40 @@
       const pcy = Math.floor(py / CHUNK_SIZE);
       const pcz = Math.floor(pz / CHUNK_SIZE);
 
+      const agora = performance.now();
+      const selecionados = new Set();
+
+      // -----------------------------------------------------------
+      // PASSO 1: Sempre pedir chunks MUITO próximos (física garantida)
+      // Mesmo fora do frustum, os chunks ao redor do jogador são
+      // necessários para não cair no void.
+      // -----------------------------------------------------------
+      const raioProximo = CHUNKS_PROXIMOS_OBRIGATORIOS;
+      let pedidosPrioritarios = 0;
+      for (let dy = -raioProximo; dy <= raioProximo; dy++) {
+        for (let dx = -raioProximo; dx <= raioProximo; dx++) {
+          for (let dz = -raioProximo; dz <= raioProximo; dz++) {
+            const cx = pcx + dx, cy = pcy + dy, cz = pcz + dz;
+            const k = keyC(cx, cy, cz);
+            if (chunks.has(k) || setPedidos.has(k)) continue;
+            if (pedidosPrioritarios >= 3) break; // limita por frame
+            pedirChunk(cx, cy, cz);
+            pedidosPrioritarios++;
+          }
+        }
+      }
+
+      // -----------------------------------------------------------
+      // PASSO 2: Frustum culling clássico
+      // -----------------------------------------------------------
       const raioChunks = Math.ceil(DISTANCIA_MAX_VISAO / CHUNK_SIZE);
       const candidatos = [];
 
       for (let dy = -raioChunks; dy <= raioChunks; dy++) {
         for (let dx = -raioChunks; dx <= raioChunks; dx++) {
           for (let dz = -raioChunks; dz <= raioChunks; dz++) {
-            const cx = pcx + dx;
-            const cy = pcy + dy;
-            const cz = pcz + dz;
+            const cx = pcx + dx, cy = pcy + dy, cz = pcz + dz;
 
-            // distância do centro do chunk ao jogador
             const ccx = (cx + 0.5) * CHUNK_SIZE;
             const ccy = (cy + 0.5) * CHUNK_SIZE;
             const ccz = (cz + 0.5) * CHUNK_SIZE;
@@ -481,16 +493,14 @@
         }
       }
 
-      // Ordena: visíveis primeiro, mais próximos primeiro
       candidatos.sort((a, b) => {
         if (a.visivel !== b.visivel) return a.visivel ? -1 : 1;
         return a.dist2 - b.dist2;
       });
 
-      const agora = performance.now();
-      const selecionados = new Set();
-
-      // 1) Marca visíveis (até MAX_CHUNKS)
+      // -----------------------------------------------------------
+      // PASSO 3: Marca visíveis até MAX_CHUNKS
+      // -----------------------------------------------------------
       let countVisiveis = 0;
       for (const c of candidatos) {
         if (!c.visivel) continue;
@@ -505,7 +515,9 @@
         }
       }
 
-      // 2) Adiciona cache (não-visíveis recentes) até preencher
+      // -----------------------------------------------------------
+      // PASSO 4: Cache (não-visíveis recentes)
+      // -----------------------------------------------------------
       for (const c of candidatos) {
         if (c.visivel) continue;
         if (selecionados.size >= MAX_CHUNKS) break;
@@ -518,7 +530,9 @@
         }
       }
 
-      // 3) Descarrega quem não foi selecionado E passou do TTL
+      // -----------------------------------------------------------
+      // PASSO 5: Descarrega os que sobraram e passaram do TTL
+      // -----------------------------------------------------------
       const paraDescarregar = [];
       chunks.forEach((ch, k) => {
         if (selecionados.has(k)) return;
@@ -528,33 +542,111 @@
       });
       for (const k of paraDescarregar) descarregarChunk(k);
 
-      // 4) Pede ao Worker os visíveis que ainda não estão prontos
+      // -----------------------------------------------------------
+      // PASSO 6: Pede chunks visíveis faltantes
+      // -----------------------------------------------------------
       let requests = 0;
       for (const c of candidatos) {
         if (!c.visivel) continue;
         const k = keyC(c.cx, c.cy, c.cz);
-        if (chunks.has(k)) continue;
-        // já pedido?
-        let jaPedido = false;
-        for (const p of pedidosPendentes.values()) {
-          if (p.cx === c.cx && p.cy === c.cy && p.cz === c.cz) {
-            jaPedido = true;
-            break;
-          }
-        }
-        if (jaPedido) continue;
+        if (chunks.has(k) || setPedidos.has(k)) continue;
         pedirChunk(c.cx, c.cy, c.cz);
         requests++;
         if (requests >= MAX_REQUESTS_POR_FRAME) break;
       }
 
-      // 5) Anexa chunks prontos (respeitando MAX_MESHES_POR_FRAME)
+      // -----------------------------------------------------------
+      // PASSO 7: Anexa chunks prontos
+      // -----------------------------------------------------------
       let meshes = 0;
       while (buffersProntos.length > 0 && meshes < MAX_MESHES_POR_FRAME) {
         const dados = buffersProntos.shift();
         anexarChunkPronto(dados);
         meshes++;
       }
+    }
+
+    // ============================================================
+    // SPAWN SEGURO (na thread principal — rápido)
+    // ============================================================
+    // Replica a função isSolid do Worker, mas só para o spawn.
+    // Isso é ~50 linhas e roda uma vez só, então não trava.
+    const PERM_SPAWN = (() => {
+      const p = new Uint8Array(512);
+      const base = [];
+      let s = 1337;
+      const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967295; };
+      for (let i = 0; i < 256; i++) base.push(i);
+      for (let i = 255; i > 0; i--) {
+        const j = Math.floor(rnd() * (i + 1));
+        [base[i], base[j]] = [base[j], base[i]];
+      }
+      for (let i = 0; i < 512; i++) p[i] = base[i & 255];
+      return p;
+    })();
+
+    function fade2(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+    function lerp2(a, b, t) { return a + t * (b - a); }
+    function grad3S(hash, x, y, z) {
+      const h = hash & 15;
+      const u = h < 8 ? x : y;
+      const v = h < 4 ? y : (h === 12 || h === 14 ? x : z);
+      return ((h & 1) === 0 ? u : -u) + ((h & 2) === 0 ? v : -v);
+    }
+    function noise3DS(x, y, z) {
+      const X = Math.floor(x) & 255;
+      const Y = Math.floor(y) & 255;
+      const Z = Math.floor(z) & 255;
+      x -= Math.floor(x); y -= Math.floor(y); z -= Math.floor(z);
+      const u = fade2(x), v = fade2(y), w = fade2(z);
+      const A = PERM_SPAWN[X] + Y, AA = PERM_SPAWN[A] + Z, AB = PERM_SPAWN[A+1] + Z;
+      const B = PERM_SPAWN[X+1] + Y, BA = PERM_SPAWN[B] + Z, BB = PERM_SPAWN[B+1] + Z;
+      return lerp2(
+        lerp2(
+          lerp2(grad3S(PERM_SPAWN[AA], x, y, z),     grad3S(PERM_SPAWN[BA], x-1, y, z), u),
+          lerp2(grad3S(PERM_SPAWN[AB], x, y-1, z),   grad3S(PERM_SPAWN[BB], x-1, y-1, z), u), v),
+        lerp2(
+          lerp2(grad3S(PERM_SPAWN[AA+1], x, y, z-1), grad3S(PERM_SPAWN[BA+1], x-1, y, z-1), u),
+          lerp2(grad3S(PERM_SPAWN[AB+1], x, y-1, z-1), grad3S(PERM_SPAWN[BB+1], x-1, y-1, z-1), u), v),
+        w);
+    }
+    function fbm2S(x, y, z) {
+      return noise3DS(x, y, z) * 0.65 + noise3DS(x*2, y*2, z*2) * 0.35;
+    }
+    function isSolidSpawn(x, y, z) {
+      const n1 = fbm2S(x * 0.06, y * 0.08, z * 0.06);
+      const n2 = noise3DS(x * 0.12 + 50, y * 0.15, z * 0.12 + 50);
+      let d = n1 * 0.75 + n2 * 0.25;
+      d += y * 0.003;
+      if (y > 30 && noise3DS(x * 0.04, y * 0.04, z * 0.04) > 0.6) {
+        return noise3DS(x * 0.2, y * 0.2, z * 0.2) > 0.2;
+      }
+      return d > 0.05;
+    }
+
+    function acharSpawnSeguro() {
+      // Procura um ponto de ar com chão sólido embaixo, em espiral
+      // a partir de (0, 20, 0). Se não achar em raio 48, usa (0, 40, 0).
+      for (let r = 0; r <= 48; r += 2) {
+        for (let dx = -r; dx <= r; dx += 1) {
+          for (let dz = -r; dz <= r; dz += 1) {
+            // só a borda do quadrado
+            if (Math.max(Math.abs(dx), Math.abs(dz)) !== r && r > 0) continue;
+
+            for (let y = 40; y >= -20; y--) {
+              // precisa de chão em y-1, ar em y, y+1, y+2
+              if (isSolidSpawn(dx, y - 1, dz) &&
+                  !isSolidSpawn(dx, y, dz) &&
+                  !isSolidSpawn(dx, y + 1, dz) &&
+                  !isSolidSpawn(dx, y + 2, dz)) {
+                return new THREE.Vector3(dx + 0.5, y + ALTURA_OLHO, dz + 0.5);
+              }
+            }
+          }
+        }
+      }
+      // Fallback: bem alto
+      return new THREE.Vector3(0.5, 60 + ALTURA_OLHO, 0.5);
     }
 
     // ============================================================
@@ -571,6 +663,8 @@
       const cx = (box.min.x + box.max.x) / 2;
       const cy = (box.min.y + box.max.y) / 2;
       const cz = (box.min.z + box.max.z) / 2;
+
+      // Otimização: pré-filtro por bounding box do chunk
       for (const c of totalColliders) {
         const ccx = (c.min.x + c.max.x) / 2;
         const ccy = (c.min.y + c.max.y) / 2;
@@ -633,12 +727,14 @@
       dashDirecao: new THREE.Vector3(),
       dashUsado: false,
       invAberto: false,
+      chunksIniciaisOK: false,
     };
 
     const player = {
       pos: new THREE.Vector3(0.5, 40 + ALTURA_OLHO, 0.5),
       vel: new THREE.Vector3(),
       onGround: false,
+      spawn: new THREE.Vector3(0.5, 40 + ALTURA_OLHO, 0.5),
     };
 
     // ============================================================
@@ -788,7 +884,7 @@
       const by = Math.floor(p.y);
       const bz = Math.floor(p.z);
 
-      const kb = `${bx},${by},${bz}`;
+      const kb = keyB(bx, by, bz);
       if (blocosQuebrados.has(kb)) return;
 
       if (!adicionarPedra()) return;
@@ -821,10 +917,9 @@
       const by = Math.floor(p.y);
       const bz = Math.floor(p.z);
 
-      const kb = `${bx},${by},${bz}`;
+      const kb = keyB(bx, by, bz);
       if (blocosColocados.has(kb)) return;
 
-      // validação: dentro do jogador?
       const baseY = player.pos.y - ALTURA_OLHO;
       const caixaBloco = new THREE.Box3(
         new THREE.Vector3(bx, by, bz),
@@ -893,7 +988,6 @@
       const dt = Math.min(clock.getDelta(), 0.05);
       const now = performance.now();
 
-      // FPS
       frames++;
       if (now - fpsTimer > 500) {
         fps = Math.round((frames * 1000) / (now - fpsTimer));
@@ -905,7 +999,6 @@
       camera.rotation.y = yaw;
       camera.rotation.x = pitch;
 
-      // Lanterna
       const dirCamera = new THREE.Vector3();
       camera.getWorldDirection(dirCamera);
       flashlight.position.copy(camera.position);
@@ -913,7 +1006,6 @@
       flashlight.target.updateMatrixWorld();
       flashlight.intensity = estado.flashOn && estado.bateria > 0 ? 2.8 : 0;
 
-      // Movimento
       const querCorrer = running && keys['w'];
       const correndoAgora = querCorrer && estado.stamina > 5 && player.onGround;
       const speed = correndoAgora ? VEL_CORRER : VEL_ANDAR;
@@ -930,7 +1022,6 @@
       }
       if (move.lengthSq() > 0) move.normalize().multiplyScalar(speed);
 
-      // Dash
       if (!estado.dashUsado && now < estado.dashAte) {
         const alvoX = player.pos.x + estado.dashDirecao.x * DASH_DISTANCIA;
         const alvoZ = player.pos.z + estado.dashDirecao.z * DASH_DISTANCIA;
@@ -943,7 +1034,6 @@
         camera.fov = 75; camera.updateProjectionMatrix();
       }
 
-      // Pulo
       if (!estado.invAberto && keys[' '] && player.onGround && estado.stamina >= CUSTO_PULO) {
         player.vel.y = FORCA_PULO;
         player.onGround = false;
@@ -977,18 +1067,16 @@
         player.onGround = false;
       }
 
-      // Respawn
-      if (player.pos.y < -64) {
-        player.pos.set(0.5, 40 + ALTURA_OLHO, 0.5);
+      // Respawn se cair muito no void — volta pro spawn ORIGINAL
+      if (player.pos.y < -32) {
+        player.pos.copy(player.spawn);
         player.vel.set(0, 0, 0);
       }
 
       camera.position.copy(player.pos);
 
-      // Chunks (frustum culling + pedidos + anexos)
       atualizarChunksPorVisao(player.pos.x, player.pos.y, player.pos.z);
 
-      // Estamina / Bateria
       if (correndoAgora) estado.stamina -= CUSTO_CORRER_S * dt;
       else estado.stamina += REGEN_STAMINA_S * dt;
       estado.stamina = Math.max(0, Math.min(STAMINA_MAX, estado.stamina));
@@ -1007,14 +1095,12 @@
       else if (estado.stamina < 50) sf.style.background = '#fbc02d';
       else sf.style.background = '#4caf50';
 
-      // Lua
       moon.position.set(player.pos.x + 20, player.pos.y + 40, player.pos.z + 10);
       moon.target.position.set(player.pos.x, player.pos.y - 5, player.pos.z);
       moon.target.updateMatrixWorld();
 
-      // Debug
       document.getElementById('debug').innerHTML =
-        `FPS: ${fps} | Chunks: ${chunks.size} | Fila Worker: ${pedidosPendentes.size} | Prontos: ${buffersProntos.length}`;
+        `FPS: ${fps} | Chunks: ${chunks.size} | Fila Worker: ${pedidosPendentes.size} | Prontos: ${buffersProntos.length} | Chão: ${player.onGround ? 'SIM' : 'NÃO'}`;
 
       renderer.render(scene, camera);
     }
@@ -1023,21 +1109,46 @@
     // INIT
     // ============================================================
     function init() {
-      // Spawn
-      player.pos.set(0.5, 40 + ALTURA_OLHO, 0.5);
+      // 1) Encontra spawn seguro na thread principal (rápido)
+      const spawn = acharSpawnSeguro();
+      player.pos.copy(spawn);
+      player.spawn.copy(spawn);
 
-      // Pedido inicial do chunk do spawn
-      const cx = Math.floor(player.pos.x / CHUNK_SIZE);
-      const cy = Math.floor(player.pos.y / CHUNK_SIZE);
-      const cz = Math.floor(player.pos.z / CHUNK_SIZE);
-      pedirChunk(cx, cy, cz);
+      // 2) Pede o chunk do spawn e os vizinhos imediatos
+      const pcx = Math.floor(spawn.x / CHUNK_SIZE);
+      const pcy = Math.floor(spawn.y / CHUNK_SIZE);
+      const pcz = Math.floor(spawn.z / CHUNK_SIZE);
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dz = -1; dz <= 1; dz++) {
+            pedirChunk(pcx + dx, pcy + dy, pcz + dz);
+          }
+        }
+      }
 
-      // Espera o primeiro chunk ficar pronto antes de esconder o loading
+      // 3) Só libera o jogo quando o chunk do spawn estiver pronto
+      let tentativas = 0;
       const checkReady = setInterval(() => {
-        if (chunks.has(keyC(cx, cy, cz))) {
+        tentativas++;
+        const k = keyC(pcx, pcy, pcz);
+        if (chunks.has(k) || tentativas > 100) {
           clearInterval(checkReady);
+          estado.chunksIniciaisOK = true;
           document.getElementById('loading').style.display = 'none';
           overlay.style.display = 'flex';
+
+          // Reajusta posição: o spawn pode ter mudado se o chunk
+          // revelou que o ponto é sólido
+          if (colideComAlgo(caixaJogador(player.pos.x, player.pos.y - ALTURA_OLHO, player.pos.z))) {
+            // tenta subir até achar ar
+            for (let y = player.pos.y; y < player.pos.y + 30; y += 1) {
+              if (!colideComAlgo(caixaJogador(player.pos.x, y - ALTURA_OLHO, player.pos.z))) {
+                player.pos.y = y;
+                player.spawn.y = y;
+                break;
+              }
+            }
+          }
         }
       }, 100);
 
