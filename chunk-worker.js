@@ -2,8 +2,8 @@
 // WORKER: gera chunks de pedra 100% na thread secundária
 // ============================================================
 
-// Configuração (deve bater com o index.html)
 const CHUNK_SIZE = 16;
+const N = CHUNK_SIZE;
 
 // ============================================================
 // RUIDO SIMPLEX 3D
@@ -83,31 +83,24 @@ const FACES = [
 ];
 
 const COR_PEDRA = [0.55, 0.55, 0.55];
-const N = CHUNK_SIZE;
 
 function gerarChunk(cx, cy, cz, mods) {
   const baseX = cx * N;
   const baseY = cy * N;
   const baseZ = cz * N;
 
-  // 1) Grid de sólidos
   const data = new Uint8Array(N * N * N);
   const idx3 = (ix, iy, iz) => ix + iy * N + iz * N * N;
 
   for (let ix = 0; ix < N; ix++) {
     for (let iy = 0; iy < N; iy++) {
       for (let iz = 0; iz < N; iz++) {
-        const wx = baseX + ix;
-        const wy = baseY + iy;
-        const wz = baseZ + iz;
-        data[idx3(ix, iy, iz)] = isSolid(wx, wy, wz) ? 1 : 0;
+        data[idx3(ix, iy, iz)] = isSolid(baseX + ix, baseY + iy, baseZ + iz) ? 1 : 0;
       }
     }
   }
 
-  // 2) Aplica modificações (blocos quebrados/colocados)
-  //    `mods` = { quebrados: Set<string>, colocados: Set<string> }
-  if (mods && (mods.quebrados.size > 0 || mods.colocados.size > 0)) {
+  if (mods && (mods.quebrados.length > 0 || mods.colocados.length > 0)) {
     for (const kb of mods.quebrados) {
       const [wx, wy, wz] = kb.split(',').map(Number);
       const ix = wx - baseX, iy = wy - baseY, iz = wz - baseZ;
@@ -124,12 +117,14 @@ function gerarChunk(cx, cy, cz, mods) {
     }
   }
 
-  // 3) Monta mesh
   const positions = [];
   const normals = [];
   const colors = [];
   const indices = [];
-  const solidosExpostos = []; // [x,y,z] de blocos com ao menos 1 face exposta
+
+  // ⚠️ NOVO: retornar TODOS os blocos sólidos (não só os expostos)
+  // A thread principal usa isso para colisão confiável.
+  const todosSolidos = [];
 
   let vIndex = 0;
 
@@ -142,7 +137,9 @@ function gerarChunk(cx, cy, cz, mods) {
         const wy = baseY + iy;
         const wz = baseZ + iz;
         const [r, g, b] = COR_PEDRA;
-        let faceVisivel = false;
+
+        // Registra para colisão (mesmo se todas as faces estiverem ocultas)
+        todosSolidos.push([wx, wy, wz]);
 
         for (const face of FACES) {
           const ix2 = ix + face.dir[0];
@@ -157,18 +154,16 @@ function gerarChunk(cx, cy, cz, mods) {
           ) {
             vizinhoSolido = data[idx3(ix2, iy2, iz2)] === 1;
           } else {
-            // fora do chunk: pergunta ao terreno (mas consulta mods)
             const nx = wx + face.dir[0];
             const ny = wy + face.dir[1];
             const nz = wz + face.dir[2];
             const nb = `${nx},${ny},${nz}`;
-            if (mods && mods.colocados.has(nb)) vizinhoSolido = true;
-            else if (mods && mods.quebrados.has(nb)) vizinhoSolido = false;
+            if (mods && mods.colocados.includes(nb)) vizinhoSolido = true;
+            else if (mods && mods.quebrados.includes(nb)) vizinhoSolido = false;
             else vizinhoSolido = isSolid(nx, ny, nz);
           }
 
           if (vizinhoSolido) continue;
-          faceVisivel = true;
 
           for (const c of face.corners) {
             positions.push(wx + c[0], wy + c[1], wz + c[2]);
@@ -181,8 +176,6 @@ function gerarChunk(cx, cy, cz, mods) {
           );
           vIndex += 4;
         }
-
-        if (faceVisivel) solidosExpostos.push([wx, wy, wz]);
       }
     }
   }
@@ -192,7 +185,7 @@ function gerarChunk(cx, cy, cz, mods) {
     normals:   new Float32Array(normals),
     colors:    new Float32Array(colors),
     indices:   new Uint32Array(indices),
-    solidosExpostos,
+    todosSolidos, // ⚠️ NOVO
   };
 }
 
@@ -202,15 +195,13 @@ function gerarChunk(cx, cy, cz, mods) {
 self.onmessage = (e) => {
   const { reqId, cx, cy, cz, mods } = e.data;
 
-  // Reconstruir Sets a partir de arrays (structured clone não preserva Set)
   const modsObj = {
-    quebrados: new Set(mods?.quebrados || []),
-    colocados: new Set(mods?.colocados || []),
+    quebrados: mods?.quebrados || [],
+    colocados: mods?.colocados || [],
   };
 
   const result = gerarChunk(cx, cy, cz, modsObj);
 
-  // postMessage com transferência (zero-copy)
   self.postMessage(
     { reqId, cx, cy, cz, ...result },
     [
